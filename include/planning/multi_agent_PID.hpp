@@ -47,8 +47,8 @@ public:
   double       desired_acceleration        = 1.0;
   double       desired_deceleration        = 1.0;
   double       max_lateral_acceleration    = 0.5;
-  int          number_of_integration_steps = 200;
-  double       dt                          = 0.05;
+  int          number_of_integration_steps = 60;
+  double       dt                          = 0.1;
   const double min_point_distance          = 0.05;
   double       max_speed                   = 5.0;
 

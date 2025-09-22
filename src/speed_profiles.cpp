@@ -89,12 +89,14 @@ SpeedProfile::generate_from_route_and_participants( const map::Route& route, con
     return;
   }
 
+
   auto prev_it = it;
   ++it;
 
   safety_distance = comfort_settings->distance_headway + vehicle_params.wheelbase + vehicle_params.front_axle_to_front_border;
   max_acc         = comfort_settings->max_acceleration;
   max_decel       = -comfort_settings->min_acceleration;
+
   forward_pass( it, end_it, prev_it, s_to_curvature, route, traffic_participants, initial_time );
 
   // Backward Pass (Smoothing and Enforcing Deceleration Limits)
@@ -148,11 +150,13 @@ SpeedProfile::forward_pass( MapPointIter& it, MapPointIter& end_it, MapPointIter
 
     for( const auto& [id, participant] : traffic_participants.participants )
     {
-      const auto& traj = participant.trajectory.value();
 
       auto state = participant.state;
       if( participant.trajectory.has_value() )
-        state = traj.get_state_at_time( time );
+      {
+        const auto& traj = participant.trajectory.value();
+        state            = traj.get_state_at_time( time );
+      }
 
       double obj_s  = route.get_s( state );
       double offset = adore::math::distance_2d( state, route.get_pose_at_s( obj_s ) );
@@ -170,7 +174,6 @@ SpeedProfile::forward_pass( MapPointIter& it, MapPointIter& end_it, MapPointIter
         }
       }
     }
-
     return std::make_pair( object_distance, object_speed );
   };
 
@@ -206,11 +209,6 @@ SpeedProfile::forward_pass( MapPointIter& it, MapPointIter& end_it, MapPointIter
 
     if( !std::isfinite( idm_speed ) )
     {
-      std::cerr << "Non-finite speed calculated at s = " << s_curr << ", setting to 0.0" << std::endl;
-      std::cerr << ", delta_s: " << delta_s << ", idm_acc: " << idm_acc << ", desired_speed: " << desired_speed
-                << ", max_curvature_speed: " << max_curvature_speed << ", max_legal_speed: " << max_legal_speed
-                << ", max_reachable_speed: " << max_reachable_speed << ", object_distance: " << object_distance
-                << ", object_speed: " << object_speed << std::endl;
       idm_speed = 0.0;
     }
 

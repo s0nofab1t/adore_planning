@@ -27,6 +27,7 @@
 #include "dynamics/integration.hpp"
 #include "dynamics/physical_vehicle_model.hpp"
 #include "dynamics/vehicle_state.hpp"
+#include "planning/idm.hpp"
 #include <eigen3/Eigen/Dense>
 
 namespace adore
@@ -177,7 +178,7 @@ static double
 get_distance_to_nearest_obstacle( const tk::spline& waypoint_spline_x, const tk::spline& waypoint_spline_y, const double waypoints_length,
                                   const dynamics::TrafficParticipantSet& traffic_participants )
 {
-  double ds                     = 0.1; // check step size
+  double ds                     = 0.5; // check step size
   int    number_of_steps        = (int) waypoints_length / ds;
   double min_distance_to_object = std::numeric_limits<double>::max();
   double treshold_within_lane   = 1.0;
@@ -251,9 +252,7 @@ waypoints_to_trajectory( const dynamics::VehicleStateDynamic& start_state, const
     double closest_obstacle_distance = get_distance_to_nearest_obstacle( spline_x, spline_y, s_vec.back(), traffic_participants );
 
     // Calculate acceleration based on speed error
-    double speed_error  = target_speed - current_state.vx;
-    double acceleration = -k_speed
-                        * ( current_state.vx - compute_idm_velocity( closest_obstacle_distance, s_vec.back(), 0.0, current_state ) );
+    double acceleration = idm::calculate_idm_acc( 100, closest_obstacle_distance, target_speed, 3.0, 7.0, current_state.vx, 2.0, 0.0 );
 
     dynamics::VehicleCommand control;
     control.acceleration = acceleration;

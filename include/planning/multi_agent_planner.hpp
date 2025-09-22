@@ -16,7 +16,6 @@
 
 #include "dynamics/traffic_participant.hpp"
 #include "dynamics/trajectory.hpp"
-#include "multi_agent_solver/models/single_track_model.hpp"
 #include "multi_agent_solver/multi_agent_solver.hpp"
 #include "planning/speed_profiles.hpp"
 
@@ -49,25 +48,25 @@ private:
 
   struct PlannerCostWeights
   {
-    double lane_error     = 10.0;
-    double speed_error    = 1.0;
-    double heading_error  = 1.0;
-    double steering_angle = 1.0;
+    double lane_error     = 1.0;
+    double speed_error    = 0.5;
+    double heading_error  = 0.3;
+    double steering_angle = 0.001;
   } weights;
 
   double dt                       = 0.1;
-  size_t horizon_steps            = 20;
+  size_t horizon_steps            = 60;
   double idm_time_headway         = 5.0;
-  double desired_distance         = 3.0;
+  double desired_distance         = 6.0;
   double max_lateral_acceleration = 2.0;
 
-  double max_speed = 5.0;
+  double max_speed = 10.0;
 
   dynamics::TrafficParticipantSet traffic_participants;
+  std::shared_ptr<map::Map>       local_map;
 
-  mas::MultiAgentAggregator aggregator;
-
-  std::shared_ptr<map::Map> local_map;
+  mas::MultiAgentProblem multi_agent_problem;
+  mas::Solution          solution;
 
   mas::OCP create_single_ocp( size_t index );
 
@@ -75,7 +74,6 @@ private:
   mas::MotionModel       get_planning_model( const dynamics::PhysicalVehicleParameters& params );
   void                   extract_trajectories();
   void                   solve_problem();
-  void                   assign_routes();
 };
 
 } // namespace planner

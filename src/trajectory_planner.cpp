@@ -109,9 +109,12 @@ TrajectoryPlanner::plan_route_trajectory( const map::Route& latest_route, const 
   SpeedProfile speed_profile;
   speed_profile.set_vehicle_parameters( vehicle_params );
   speed_profile.set_comfort_settings( comfort_settings );
+
   speed_profile.generate_from_route_and_participants( latest_route, traffic_participants, current_state.vx, initial_s, current_state.time,
                                                       ref_traj_length );
+
   auto ref_traj = generate_trajectory_from_speed_profile( speed_profile, latest_route, dt );
+
   return optimize_trajectory( current_state, ref_traj );
 }
 
@@ -134,21 +137,17 @@ TrajectoryPlanner::solve_problem() // THIS ONE WORKS
   params["max_ms"]         = solver_params.max_ms;
   params["debug"]          = solver_params.debug;
 
-  mas::OSQPCollocation osqp_collocation_solver;
-  osqp_collocation_solver.set_params( params );
-  mas::CGD cgd_solver;
-  cgd_solver.set_params( params );
-
   auto solve_with = [&]( auto&& solver, double max_ms ) {
     params["max_ms"] = max_ms;
     solver.set_params( params );
     solver.solve( *problem );
+    problem->update_initial_with_best();
   };
 
   // first pass with collocation
   solve_with( mas::OSQPCollocation{}, 50 );
   // then refine with CGD
-  solve_with( mas::CGD{}, 10 );
+  solve_with( mas::iLQR{}, 10 );
 }
 
 dynamics::Trajectory
@@ -195,7 +194,6 @@ TrajectoryPlanner::setup_problem()
   problem->input_lower_bounds = lower_bounds;
   problem->input_upper_bounds = upper_bounds;
   problem->stage_cost         = make_trajectory_cost( reference_trajectory );
-  problem->terminal_cost      = []( const mas::State& x ) -> double { return 0.0; };
 
   problem->initial_state << start_state.x, start_state.y, start_state.yaw_angle, start_state.vx;
   problem->initialize_problem();

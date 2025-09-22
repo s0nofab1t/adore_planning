@@ -87,10 +87,16 @@ MultiAgentPlanner::create_single_ocp( size_t id )
   problem.input_lower_bounds = lower_bounds;
   problem.input_upper_bounds = upper_bounds;
 
+  Eigen::VectorXd state_lower_bounds( problem.state_dim ), state_upper_bounds( problem.state_dim );
+  state_lower_bounds << -100000000, -100000000, -2 * M_PI, -0.2, -0.5; // x, y, yaw_angle, speed, s
+  state_upper_bounds << 100000000, 100000000, 2 * M_PI, 15.0, 1000;
+  problem.state_lower_bounds = state_lower_bounds;
+  problem.state_upper_bounds = state_upper_bounds;
+
   problem.stage_cost = [&, weights = weights, participant = participant, id = id]( const mas::State& x, const mas::State& u,
                                                                                    size_t time_idx ) -> double {
     double cost        = 0;
-    double guide_speed = 2;
+    double guide_speed = 8.0;
     // lane deviation cost
     if( participant.route )
     {
@@ -123,12 +129,16 @@ MultiAgentPlanner::create_single_ocp( size_t id )
     const double cyaw    = math::fast_cos( heading );
     const double syaw    = math::fast_sin( heading );
 
-    double max_dist   = 100.0;
+    double max_dist   = 1000.0;
     double speed_obj  = 0.0;
     double other_size = 0.0;
 
-    for( const auto& [other_id, other_ocp_ptr] : aggregator.agent_ocps )
+    for( const auto& agent : multi_agent_problem.agents )
     {
+
+      auto other_id      = agent->id;
+      auto other_ocp_ptr = agent->ocp;
+
       if( other_id == id )
         continue;
 
@@ -148,7 +158,7 @@ MultiAgentPlanner::create_single_ocp( size_t id )
         other_size              = other_participant.physical_parameters.get_total_length();
       }
     }
-    constexpr double DEFAULT_ROUTE_DIST = 100;
+    constexpr double DEFAULT_ROUTE_DIST = 1000;
 
     double remaining_route_length = participant.route ? participant.route->get_length() - x( 4 ) : DEFAULT_ROUTE_DIST;
 
@@ -156,21 +166,38 @@ MultiAgentPlanner::create_single_ocp( size_t id )
 
     const double spacing = desired_distance + to_front + other_size / 2;
 
+    // double idm_acc = idm::calculate_idm_acc( remaining_route_length, max_dist, guide_speed, idm_time_headway, spacing, x( 3 ),
+    //                                          participant.physical_parameters.acceleration_max, speed_obj );
     double idm_acc = idm::calculate_idm_acc( remaining_route_length, max_dist, guide_speed, idm_time_headway, spacing, x( 3 ),
-                                             participant.physical_parameters.steering_angle_max, speed_obj );
+                                             participant.physical_parameters.acceleration_max, speed_obj );
 
     cost += weights.speed_error * std::pow( idm_acc - u( 1 ), 2 );
     cost += weights.steering_angle * u( 0 ) * u( 0 );
     return cost;
   };
 
-  problem.terminal_cost = []( const mas::State& x ) -> double { return 0.0; };
-
   auto& state = participant.state;
 
   double s = participant.route ? participant.route->get_s( state ) : 0;
 
   problem.initial_state << state.x, state.y, state.yaw_angle, state.vx, s;
+
+  // populate initial controls from participant trajectory if available
+  if( participant.trajectory && !participant.trajectory->states.empty() )
+  {
+    problem.initial_controls = mas::ControlTrajectory::Zero( problem.control_dim, problem.horizon_steps );
+    for( size_t t = 0; t < problem.horizon_steps; ++t )
+    {
+      if( t < participant.trajectory->states.size() )
+      {
+        const auto& traj_state           = participant.trajectory->states[t];
+        problem.initial_controls( 0, t ) = traj_state.steering_angle;
+        problem.initial_controls( 1, t ) = ( traj_state.ax );
+      }
+    }
+  }
+
+
   problem.initialize_problem();
   problem.verify_problem();
   return problem;
@@ -179,66 +206,54 @@ MultiAgentPlanner::create_single_ocp( size_t id )
 void
 MultiAgentPlanner::solve_problem()
 {
+  multi_agent_problem.agents.clear();
 
-  aggregator.reset();
-  assign_routes();
-  mas::SolverParams inner_params{
-    { "max_iterations",   60 },
-    {      "tolerance", 1e-5 },
-    {         "max_ms",   20 },
-    {          "debug",  0.0 }
-  };
-  const size_t max_outer = 3;
-
-  // create ocp for each participant
+  // build OCPs and add as agents
   for( auto& [id, participant] : traffic_participants.participants )
   {
-    auto single_ocp           = create_single_ocp( id );
-    aggregator.agent_ocps[id] = std::make_shared<mas::OCP>( single_ocp );
+    auto ocp = std::make_shared<mas::OCP>( create_single_ocp( id ) );
+    multi_agent_problem.add_agent( std::make_shared<mas::Agent>( id, ocp ) );
   }
-  aggregator.compute_offsets();
 
-  aggregator.solve_decentralized_line_search<mas::OSQPCollocation>( max_outer, inner_params );
+  // Nash line‑search with OSQP collocation solver
+  mas::SolverParams inner_params{
+    { "max_iterations",  100 },
+    {      "tolerance", 1e-2 },
+    {         "max_ms",   40 },
+    {          "debug",  0.0 }
+  };
+  size_t        max_outer_iterations = 2;
+  mas::Solver   solver{ std::in_place_type<mas::iLQR> };
+  mas::Strategy strat = mas::TrustRegionNashStrategy{ max_outer_iterations, std::move( solver ), inner_params };
+  solution            = mas::solve( strat, multi_agent_problem );
 }
 
 void
 MultiAgentPlanner::extract_trajectories()
 {
-  for( auto& [id, participant] : traffic_participants.participants )
+  // problem.blocks are sorted by agent id
+  for( std::size_t i = 0; i < multi_agent_problem.blocks.size(); ++i )
   {
-    dynamics::Trajectory trajectory;
-    auto                 problem = aggregator.agent_ocps[id];
-    trajectory.states.reserve( problem->horizon_steps );
-    for( size_t i = 0; i < problem->horizon_steps; ++i )
+    std::size_t id          = multi_agent_problem.blocks[i].agent_id;
+    auto&       participant = traffic_participants.participants.at( id );
+    const auto& X           = solution.states[i];
+    const auto& U           = solution.controls[i];
+
+    dynamics::Trajectory traj;
+    traj.states.reserve( X.cols() );
+    for( int k = 0; k < X.cols(); ++k )
     {
-      dynamics::VehicleStateDynamic state;
-      auto                          x = problem->best_states.col( i );
-      auto                          u = problem->best_controls.col( i );
-
-      state.x              = x( 0 );
-      state.y              = x( 1 );
-      state.yaw_angle      = x( 2 );
-      state.vx             = x( 3 );
-      state.time           = participant.state.time + i * dt;
-      state.steering_angle = u( 0 );
-      state.ax             = u( 1 );
-
-      trajectory.states.push_back( state );
+      dynamics::VehicleStateDynamic st;
+      st.x              = X( 0, k );
+      st.y              = X( 1, k );
+      st.yaw_angle      = X( 2, k );
+      st.vx             = X( 3, k );
+      st.time           = participant.state.time + k * dt;
+      st.steering_angle = U( 0, k );
+      st.ax             = U( 1, k );
+      traj.states.push_back( st );
     }
-    participant.trajectory = trajectory;
-  }
-}
-
-void
-MultiAgentPlanner::assign_routes()
-{
-  const double max_route_length = 100.0;
-  for( auto& [id, participant] : traffic_participants.participants )
-  {
-    if( !participant.route && participant.classification != dynamics::PEDESTRIAN )
-    {
-      participant.route = map::get_default_route( participant.state, max_route_length, local_map );
-    }
+    participant.trajectory = std::move( traj );
   }
 }
 

@@ -219,10 +219,10 @@ MultiAgentPlanner::solve_problem()
   mas::SolverParams inner_params{
     { "max_iterations",  100 },
     {      "tolerance", 1e-2 },
-    {         "max_ms",   40 },
+    {         "max_ms",   20 },
     {          "debug",  0.0 }
   };
-  size_t        max_outer_iterations = 2;
+  size_t        max_outer_iterations = 4;
   mas::Solver   solver{ std::in_place_type<mas::iLQR> };
   mas::Strategy strat = mas::TrustRegionNashStrategy{ max_outer_iterations, std::move( solver ), inner_params };
   solution            = mas::solve( strat, multi_agent_problem );

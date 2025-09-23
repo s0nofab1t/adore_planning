@@ -214,7 +214,7 @@ template<typename Line>
 dynamics::Trajectory
 waypoints_to_trajectory( const dynamics::VehicleStateDynamic& start_state, const Line& waypoints,
                          const dynamics::TrafficParticipantSet& traffic_participants, const dynamics::PhysicalVehicleModel& model,
-                         double target_speed = 2.0, double dt = 0.1, double k_speed = 0.5, double k_lateral = 1.0, double k_heading = 2.0,
+                         double target_speed = 2.0, double dt = 0.1, double k_speed = 0.5, double k_lateral = 0.5, double k_heading = 2.0,
                          double cg_ratio = 0.5 )
 {
   dynamics::Trajectory trajectory;
@@ -269,7 +269,7 @@ waypoints_to_trajectory( const dynamics::VehicleStateDynamic& start_state, const
     auto [lateral_error, heading_error] = calculate_errors( current_state, target_x, target_y, target_yaw );
 
     // Set steering angle based on direction and lateral error
-    control.steering_angle = heading_error * k_heading + lateral_error * k_lateral * current_state.vx;
+    control.steering_angle = heading_error * k_heading + lateral_error * k_lateral;
 
     control.clamp_within_limits( model.params );
 

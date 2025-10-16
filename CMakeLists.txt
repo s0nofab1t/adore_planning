@@ -41,9 +41,6 @@ target_include_directories(${PROJECT_NAME}
 # Link dependencies (PRIVATE visibility preferred)
 target_link_libraries(${PROJECT_NAME}
   PUBLIC
-    osqp::osqp
-    OsqpEigen::OsqpEigen
-    OpenDrive::OpenDrive
     MultiAgentSolver::MultiAgentSolver
     adore_map::adore_map
     adore_math::adore_math
@@ -73,7 +70,7 @@ install(EXPORT export_${PROJECT_NAME}
 
 # ament exports for ROS 2 packages
 ament_export_include_directories(include)
-ament_export_dependencies(osqp OsqpEigen OpenDrive MultiAgentSolver adore_dynamics adore_map adore_math adore_controllers)
+ament_export_dependencies(MultiAgentSolver adore_dynamics adore_map adore_math adore_controllers)
 ament_export_targets(export_${PROJECT_NAME})
 
 ament_package()

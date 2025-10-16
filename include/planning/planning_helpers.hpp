@@ -151,35 +151,13 @@ calculate_errors( const dynamics::VehicleStateDynamic& state, double target_x, d
   return { lateral_error, heading_error };
 }
 
-static double
-compute_idm_velocity( double obstacle_distance, double goal_distance, double obstacle_speed,
-                      const dynamics::VehicleStateDynamic& current_state )
-{
-  double max_speed            = 2.0;
-  double desired_acceleration = 2.0;
-  double desired_deceleration = 2.0;
-  double min_distance         = 8.0;
-  double time_headway         = 3.0;
-
-  double effective_distance = std::min( obstacle_distance, goal_distance );
-  if( goal_distance < obstacle_distance )
-    min_distance = 0.0;
-
-  double s_star = min_distance + current_state.vx * time_headway
-                + current_state.vx * ( current_state.vx - obstacle_speed )
-                    / ( 2 * std::sqrt( desired_acceleration * desired_deceleration ) );
-
-  return current_state.vx
-       + desired_acceleration * ( 1 - std::pow( current_state.vx / max_speed, 4 ) - std::pow( s_star / effective_distance, 2 ) );
-}
-
 // compute the distance to the nearest object, if within a certain radius from the center of the waypoint lane, considering obstacle fixed
 static double
 get_distance_to_nearest_obstacle( const tk::spline& waypoint_spline_x, const tk::spline& waypoint_spline_y, const double waypoints_length,
                                   const dynamics::TrafficParticipantSet& traffic_participants )
 {
   double ds                     = 0.5; // check step size
-  int    number_of_steps        = (int) waypoints_length / ds;
+  int    number_of_steps        = static_cast<int>( waypoints_length / ds );
   double min_distance_to_object = std::numeric_limits<double>::max();
   double treshold_within_lane   = 1.0;
 

@@ -35,7 +35,8 @@ public:
                                               const dynamics::TrafficParticipantSet& traffic_participants );
 
   dynamics::Trajectory optimize_trajectory( const dynamics::VehicleStateDynamic& current_state,
-                                            const dynamics::Trajectory&          reference_trajectory );
+                                            const dynamics::Trajectory&          reference_trajectory,
+                                            const dynamics::Trajectory&          initial_guess = dynamics::Trajectory() );
 
   void set_parameters( const std::map<std::string, double>& params );
   void set_vehicle_parameters( const dynamics::PhysicalVehicleParameters& params );
@@ -62,12 +63,14 @@ private:
   } weights;
 
   double dt              = 0.1;
-  size_t horizon_steps   = 60;
+  size_t horizon_steps   = 40;
   double ref_traj_length = 200;
 
-  std::shared_ptr<mas::OCP>     problem;
-  dynamics::Trajectory          reference_trajectory; // Reference trajectory for the planner
-  dynamics::VehicleStateDynamic start_state;          // Current state of the vehicle
+  std::shared_ptr<mas::OCP> problem;
+  dynamics::Trajectory      reference_trajectory; // Reference trajectory for the planner
+  dynamics::Trajectory      guess_trajectory;     // Reference trajectory for the planner
+
+  dynamics::VehicleStateDynamic start_state; // Current state of the vehicle
 
   dynamics::PhysicalVehicleParameters        vehicle_params;
   std::shared_ptr<dynamics::ComfortSettings> comfort_settings;
@@ -75,9 +78,10 @@ private:
 
   void                   setup_problem();
   mas::StageCostFunction make_trajectory_cost( const dynamics::Trajectory& ref_traj );
-  mas::MotionModel       get_planning_model( const dynamics::PhysicalVehicleParameters& params );
-  dynamics::Trajectory   extract_trajectory();
-  void                   solve_problem();
+
+  mas::MotionModel     get_planning_model( const dynamics::PhysicalVehicleParameters& params );
+  dynamics::Trajectory extract_trajectory();
+  void                 solve_problem();
 };
 
 } // namespace planner

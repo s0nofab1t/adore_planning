@@ -115,8 +115,8 @@ TrajectoryPlanner::plan_route_trajectory( const map::Route& latest_route, const 
 
   auto ref_traj = generate_trajectory_from_speed_profile( speed_profile, latest_route, current_state, dt );
 
-  // use pid to follow trajectory to get control inputs
-  controllers::PID pid;
+  // use pid to follow trajectory to get initial guess inputs
+  controllers::PurePursuit pid;
   pid.model        = dynamics::PhysicalVehicleModel();
   pid.model.params = vehicle_params;
 

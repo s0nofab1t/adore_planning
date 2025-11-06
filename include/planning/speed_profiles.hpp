@@ -152,8 +152,6 @@ generate_trajectory_from_speed_profile( const SpeedProfile& speed_profile, const
   }
 
 
-  std::cerr << "Generated trajectory with " << trajectory.states.size() << " states." << std::endl;
-
   return trajectory;
 }
 } // namespace planner

@@ -22,13 +22,20 @@ double
 SpeedProfile::get_speed_at_s( double s ) const
 {
   auto it = s_to_speed.lower_bound( s );
-  if( it == s_to_speed.end() )
+  if( it == s_to_speed.end() ) // right-side extrapolation
+
   {
-    return s_to_speed.rbegin()->second;
+    auto   it_last = s_to_speed.rbegin();
+    auto   it_prev = std::next( it_last );
+    double slope   = ( it_last->second - it_prev->second ) / +( it_last->first - it_prev->first );
+    return it_last->second + slope * ( s - it_last->first );
   }
-  else if( it == s_to_speed.begin() )
+  else if( it == s_to_speed.begin() ) // left-side extrapolation
+
   {
-    return it->second;
+    auto   it_next = std::next( it );
+    double slope   = ( it_next->second - it->second ) / +( it_next->first - it->first );
+    return it->second + slope * ( s - it->first );
   }
   else
   {
@@ -60,40 +67,40 @@ SpeedProfile::get_acc_at_s( double s ) const
 
 void
 SpeedProfile::generate_from_route_and_participants( const map::Route& route, const dynamics::TrafficParticipantSet& traffic_participants,
-                                                    double initial_speed, double initial_s, double initial_time,
-                                                    double max_lateral_acceleration, double desired_time_headway, double length )
+                                                    double initial_speed, double initial_s, double initial_time, double length )
 {
   // Clear previous speed profile
   s_to_speed.clear();
   s_to_acc.clear();
 
   // Compute curvature-based speed limits
-  std::map<double, double> s_to_curvature = calculate_curvature_speeds( route, max_lateral_acceleration, initial_s, length );
+  std::map<double, double> s_to_curvature = calculate_curvature_speeds( route, initial_s, length );
 
   // Initialize starting conditions
-  s_to_speed[initial_s] = initial_speed;
+  auto   it          = route.reference_line.lower_bound( initial_s );
+  double s_curr      = it->first;
+  s_to_speed[s_curr] = initial_speed;
 
-  auto it     = route.center_lane.lower_bound( initial_s );
-  auto end_it = route.center_lane.lower_bound( initial_s + length );
-  end_it--;
+  auto end_it = std::prev( route.reference_line.lower_bound( initial_s + length ) );
 
-  if( it == route.center_lane.end() )
+  if( it == route.reference_line.end() )
   {
     return;
   }
 
+
   auto prev_it = it;
   ++it;
 
-  safety_distance  = distance_headway + vehicle_params.wheelbase + vehicle_params.front_axle_to_front_border;
-  max_acceleration = vehicle_params.acceleration_max;
-  max_deceleration = -vehicle_params.acceleration_min;
+  safety_distance = comfort_settings->distance_headway + vehicle_params.wheelbase + vehicle_params.front_axle_to_front_border;
+  max_acc         = comfort_settings->max_acceleration;
+  max_decel       = -comfort_settings->min_acceleration;
+
   forward_pass( it, end_it, prev_it, s_to_curvature, route, traffic_participants, initial_time );
 
   // Backward Pass (Smoothing and Enforcing Deceleration Limits)
-  auto current_it  = std::prev( end_it );
+  auto current_it  = end_it; // now inclusive
   auto previous_it = std::prev( current_it );
-
   backward_pass( previous_it, route, initial_s, current_it, length );
 }
 
@@ -101,15 +108,15 @@ void
 SpeedProfile::backward_pass( MapPointIter& previous_it, const adore::map::Route& route, double initial_s, MapPointIter& current_it,
                              double length )
 {
-  while( previous_it != route.center_lane.lower_bound( initial_s ) )
+  while( previous_it != route.reference_line.lower_bound( initial_s ) )
   {
     double s_prev  = previous_it->first;
     double s_curr  = current_it->first;
     double delta_s = s_curr - s_prev;
 
-    double idm_acc = idm::calculate_idm_acc( length, length, s_to_speed[s_prev], desired_time_headway, safety_distance, s_to_speed[s_curr],
-                                             max_deceleration, 0.0 );
-    idm_acc        = std::clamp( idm_acc, -max_acceleration, max_deceleration );
+    double idm_acc = idm::calculate_idm_acc( length, length, s_to_speed[s_prev], comfort_settings->time_headway, safety_distance,
+                                             s_to_speed[s_curr], max_decel, 0.0 );
+    idm_acc        = std::clamp( idm_acc, -max_acc, max_decel );
 
     double idm_speed = std::sqrt( s_to_speed[s_curr] * s_to_speed[s_curr] + 2.0 * idm_acc * delta_s );
 
@@ -119,7 +126,7 @@ SpeedProfile::backward_pass( MapPointIter& previous_it, const adore::map::Route&
       s_to_acc[s_prev]   = -idm_acc;
     }
 
-    if( previous_it == route.center_lane.begin() )
+    if( previous_it == route.reference_line.begin() )
     {
       break;
     }
@@ -142,11 +149,13 @@ SpeedProfile::forward_pass( MapPointIter& it, MapPointIter& end_it, MapPointIter
 
     for( const auto& [id, participant] : traffic_participants.participants )
     {
-      const auto& traj = participant.trajectory.value();
 
       auto state = participant.state;
       if( participant.trajectory.has_value() )
-        state = traj.get_state_at_time( time );
+      {
+        const auto& traj = participant.trajectory.value();
+        state            = traj.get_state_at_time( time );
+      }
 
       double obj_s  = route.get_s( state );
       double offset = adore::math::distance_2d( state, route.get_pose_at_s( obj_s ) );
@@ -164,7 +173,6 @@ SpeedProfile::forward_pass( MapPointIter& it, MapPointIter& end_it, MapPointIter
         }
       }
     }
-
     return std::make_pair( object_distance, object_speed );
   };
 
@@ -184,26 +192,22 @@ SpeedProfile::forward_pass( MapPointIter& it, MapPointIter& end_it, MapPointIter
       continue;
     }
 
-    double max_curvature_speed = s_to_curvature.lower_bound( s_curr )->second;
-    double max_legal_speed     = it->second.max_speed ? *it->second.max_speed : max_allowed_speed;
-    double max_reachable_speed = std::sqrt( s_to_speed[s_prev] * s_to_speed[s_prev] + 2 * max_acceleration * delta_s );
+    double max_curvature_speed  = s_to_curvature.lower_bound( s_curr )->second;
+    double max_legal_speed      = it->second.max_speed ? *it->second.max_speed : comfort_settings->max_speed;
+    max_legal_speed            *= comfort_settings->speed_fraction_of_limit;
+    double max_reachable_speed  = std::sqrt( s_to_speed[s_prev] * s_to_speed[s_prev] + 2 * max_acc * delta_s );
 
-    double desired_speed = std::min( { max_curvature_speed, max_legal_speed, max_reachable_speed } );
+    double desired_speed = std::min( { max_curvature_speed, max_legal_speed } );
 
-    double idm_acc = idm::calculate_idm_acc( route.get_length() - s_curr, object_distance, desired_speed, desired_time_headway,
-                                             safety_distance, s_to_speed[s_prev], max_acceleration, object_speed );
-    idm_acc        = std::clamp( idm_acc, -max_deceleration, max_acceleration );
+    double idm_acc = idm::calculate_idm_acc( route.get_length() - s_curr, object_distance, desired_speed, comfort_settings->time_headway,
+                                             safety_distance, s_to_speed[s_prev], max_acc, object_speed );
+    idm_acc        = std::clamp( idm_acc, -max_decel, max_acc );
 
     // Compute speed limits
     double idm_speed = std::sqrt( s_to_speed[s_prev] * s_to_speed[s_prev] + 2 * idm_acc * delta_s );
 
     if( !std::isfinite( idm_speed ) )
     {
-      std::cerr << "Non-finite speed calculated at s = " << s_curr << ", setting to 0.0" << std::endl;
-      std::cerr << ", delta_s: " << delta_s << ", idm_acc: " << idm_acc << ", desired_speed: " << desired_speed
-                << ", max_curvature_speed: " << max_curvature_speed << ", max_legal_speed: " << max_legal_speed
-                << ", max_reachable_speed: " << max_reachable_speed << ", object_distance: " << object_distance
-                << ", object_speed: " << object_speed << std::endl;
       idm_speed = 0.0;
     }
 
@@ -216,42 +220,62 @@ SpeedProfile::forward_pass( MapPointIter& it, MapPointIter& end_it, MapPointIter
 }
 
 std::map<double, double>
-SpeedProfile::calculate_curvature_speeds( const adore::map::Route& route, double max_lateral_acceleration, double initial_s, double length,
-                                          double max_curvature )
+SpeedProfile::calculate_curvature_speeds( const adore::map::Route& route, double initial_s, double length, double max_curvature )
 {
   std::map<double, double> s_to_curvature;
 
-  if( route.center_lane.size() < 3 )
+  if( route.reference_line.size() < 3 )
   {
-    std::cerr << "Route has less than 3 points, cannot speed profile" << std::endl;
+    std::cerr << "Route has less than 3 points, cannot speed profile\n";
     return s_to_curvature;
   }
 
-  // Get the boundaries for the route segment
-  auto begin_it = std::next( route.center_lane.lower_bound( initial_s ) );
-  auto end_it   = route.center_lane.upper_bound( initial_s + length );
+  auto begin_it = std::next( route.reference_line.lower_bound( initial_s ) );
+  auto end_it   = route.reference_line.upper_bound( initial_s + length );
 
-  // Iterate over the route with a sliding window of 3 points
   for( auto it = begin_it; std::next( it ) != end_it; ++it )
   {
-    const auto& [prev_s, prev_point] = *std::prev( it );
-    const auto& [curr_s, curr_point] = *it;
-    const auto& [next_s, next_point] = *std::next( it );
+    double s         = it->first;
+    double curvature = route.get_curvature_at_s( s );
+    curvature        = std::min( std::fabs( curvature ), max_curvature );
 
-    // skip if points are too close
-    if( std::fabs( curr_s - prev_s ) < 1e-6 || std::fabs( next_s - curr_s ) < 1e-6 )
-    {
-      continue;
-    }
-
-    // Compute curvature
-    double curvature = adore::math::compute_curvature( prev_point.x, prev_point.y, curr_point.x, curr_point.y, next_point.x, next_point.y );
-    curvature        = std::min( curvature, max_curvature );
-
-    // Compute maximum speed for that curvature
-    double max_curve_speed = std::sqrt( max_lateral_acceleration / std::max( std::fabs( curvature ), 1e-6 ) );
-    s_to_curvature[curr_s] = max_curve_speed;
+    double vmax       = std::sqrt( comfort_settings->max_lateral_acceleration / std::max( curvature, 1e-6 ) );
+    s_to_curvature[s] = vmax;
   }
+
+  const int    half_win = 5; // k ⇒ window = 2k+1
+  const size_t N        = s_to_curvature.size();
+  if( N < 5 )
+    return s_to_curvature; // nothing to smooth
+
+  std::vector<double> keys, vals;
+  keys.reserve( N );
+  vals.reserve( N );
+  for( auto& kv : s_to_curvature )
+  {
+    keys.push_back( kv.first );
+    vals.push_back( kv.second );
+  }
+
+  std::vector<double> smoothed( vals );
+
+  for( size_t i = 0; i < N; ++i )
+  {
+    int lo = static_cast<int>( i ) - half_win;
+    int hi = lo + half_win * 2;
+    lo     = std::max( lo, 0 );
+    hi     = std::min( hi, static_cast<int>( N ) - 1 );
+
+    double sum = 0.0;
+    for( int j = lo; j <= hi; ++j )
+      sum += vals[j];
+    double avg = sum / ( hi - lo + 1 );
+
+    smoothed[i] = avg;
+  }
+
+  for( size_t i = 0; i < N; ++i )
+    s_to_curvature[keys[i]] = smoothed[i];
 
   return s_to_curvature;
 }

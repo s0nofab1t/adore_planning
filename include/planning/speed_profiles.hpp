@@ -23,6 +23,8 @@
 #include "adore_map/route.hpp"
 #include "adore_math/curvature.hpp"
 
+#include "controllers/controller.hpp"
+#include "dynamics/comfort_settings.hpp"
 #include "dynamics/physical_vehicle_parameters.hpp"
 #include "dynamics/traffic_participant.hpp"
 #include "dynamics/trajectory.hpp"
@@ -36,8 +38,6 @@ namespace planner
 
 struct SpeedProfile
 {
-  std::map<double, double> s_to_speed;
-  std::map<double, double> s_to_acc;
 
   using MapPointIter = std::map<double, adore::map::MapPoint>::const_iterator;
 
@@ -45,8 +45,7 @@ struct SpeedProfile
   double get_acc_at_s( double s ) const;
 
   void generate_from_route_and_participants( const map::Route& route, const dynamics::TrafficParticipantSet& traffic_participants,
-                                             double initial_speed, double initial_s, double initial_time, double max_lateral_acceleration,
-                                             double desired_time_headway, double length );
+                                             double initial_speed, double initial_s, double initial_time, double length );
 
   void backward_pass( MapPointIter& previous_it, const adore::map::Route& route, double initial_s, MapPointIter& current_it,
                       double length );
@@ -57,11 +56,17 @@ struct SpeedProfile
 
   SpeedProfile() {};
 
+  void
+  set_vehicle_parameters( const dynamics::PhysicalVehicleParameters& params )
+  {
+    vehicle_params = params;
+  }
 
-  double                              max_allowed_speed = 13.7; // 50 km/h in m/s, can be adjusted based on vehicle parameters
-  dynamics::PhysicalVehicleParameters vehicle_params;
-  double                              desired_time_headway = 3.0; // seconds
-  double                              distance_headway     = 3.0; // meters, safety distance ( after vehicle length )
+  void
+  set_comfort_settings( const std::shared_ptr<dynamics::ComfortSettings>& settings )
+  {
+    comfort_settings = settings;
+  }
 
   // Overloading the << operator
   friend std::ostream&
@@ -75,39 +80,84 @@ struct SpeedProfile
     return os;
   }
 
+  std::map<double, double> s_to_speed;
+  std::map<double, double> s_to_acc;
+
 private:
 
-  double max_deceleration;
-  double max_acceleration;
-  double safety_distance;
+  std::map<double, double>                   calculate_curvature_speeds( const adore::map::Route& route, double initial_s, double length,
+                                                                         double max_curvature = 0.5 );
+  dynamics::PhysicalVehicleParameters        vehicle_params;
+  std::shared_ptr<dynamics::ComfortSettings> comfort_settings;
 
-  std::map<double, double> calculate_curvature_speeds( const adore::map::Route& route, double max_lateral_acceleration, double initial_s,
-                                                       double length, double max_curvature = 0.5 );
+
+  // default values overritten by comfort settings
+  double max_acc         = 2.0;  // [m/s^2] maximum acceleration
+  double max_decel       = -2.0; // [m/s^2]
+  double safety_distance = 3.0;  // [m] safety distance to the nearest object
 };
 
 static adore::dynamics::Trajectory
-generate_trajectory_from_speed_profile( const SpeedProfile& speed_profile, const map::Route& route, double time_step = 0.1 )
+generate_trajectory_from_speed_profile( const SpeedProfile& speed_profile, const map::Route& route,
+                                        const dynamics::VehicleStateDynamic& start_state, double time_step = 0.1 )
 {
   adore::dynamics::Trajectory initial_trajectory;
   double                      accumulated_time = 0.0;
 
-  // Generate initial trajectory from the speed profile
+  // basic sanity on time_step
+  if( !std::isfinite( time_step ) || time_step <= 0.0 )
+  {
+    time_step = 0.1;
+  }
+
+  // need at least two points to form a segment
+  if( speed_profile.s_to_speed.size() < 2 )
+  {
+    return initial_trajectory;
+  }
+
+  constexpr double min_avg_speed  = 0.1;    // m/s, avoid division by ~0
+  constexpr double max_total_time = 3600.0; // clamp to 1h to avoid insane trajectories
+
   auto it      = speed_profile.s_to_speed.begin();
   auto next_it = std::next( it );
 
   while( next_it != speed_profile.s_to_speed.end() )
   {
-    double s1 = it->first;
-    double s2 = next_it->first;
+    const double s1 = it->first;
+    const double s2 = next_it->first;
+    const double v1 = it->second;
+    const double v2 = next_it->second;
 
-    double v1      = it->second;
-    double v2      = next_it->second;
-    double delta_s = s2 - s1;
+    const double delta_s = s2 - s1;
 
-    // Get the pose at s1
-    auto pose = route.get_pose_at_s( s1 );
+    // skip non-forward or zero-length segments
+    if( delta_s <= 0.0 )
+    {
+      ++it;
+      ++next_it;
+      continue;
+    }
 
-    // Create a VehicleStateDynamic
+    double avg_v = 0.5 * ( v1 + v2 );
+
+    // avoid zero / negative or tiny average speed → clamp
+    if( !std::isfinite( avg_v ) || avg_v < min_avg_speed )
+    {
+      avg_v = min_avg_speed;
+    }
+
+    const double delta_t = delta_s / avg_v;
+
+    if( !std::isfinite( delta_t ) || delta_t <= 0.0 )
+    {
+      ++it;
+      ++next_it;
+      continue;
+    }
+
+    const auto pose = route.get_pose_at_s( s1 );
+
     adore::dynamics::VehicleStateDynamic state;
     state.x         = pose.x;
     state.y         = pose.y;
@@ -115,31 +165,79 @@ generate_trajectory_from_speed_profile( const SpeedProfile& speed_profile, const
     state.vx        = v1;
     state.time      = accumulated_time;
 
+    accumulated_time += delta_t;
 
-    // Add to the initial trajectory
+    if( accumulated_time > max_total_time )
+    {
+      accumulated_time = max_total_time;
+    }
 
-    // Integrate time using the segment speed (average of v1 and v2)
-    double avg_speed  = ( v1 + v2 ) / 2.0;
-    accumulated_time += ( avg_speed > 1e-3 ) ? delta_s / avg_speed : 0.0;
-    state.ax          = speed_profile.s_to_acc.lower_bound( s2 )->second;
+    const double dt = accumulated_time - state.time;
+    if( dt > 0.0 && std::isfinite( dt ) )
+    {
+      state.ax = ( v2 - v1 ) / dt;
+    }
+    else
+    {
+      state.ax = 0.0;
+    }
 
     initial_trajectory.states.push_back( state );
+
+    if( accumulated_time >= max_total_time )
+    {
+      break;
+    }
 
     ++it;
     ++next_it;
   }
 
-  // Re-interpolate to constant time intervals using `get_state_at_time`
   adore::dynamics::Trajectory trajectory;
-  double                      final_time = accumulated_time;
 
-  for( double t = 0.0; t <= final_time; t += time_step )
+  // nothing usable built → just return empty trajectory
+  if( initial_trajectory.states.empty() )
   {
-    auto interpolated_state = initial_trajectory.get_state_at_time( t );
-    trajectory.states.push_back( interpolated_state );
+    return trajectory;
+  }
+
+  const double t_final = initial_trajectory.states.back().time;
+
+  if( !std::isfinite( t_final ) || t_final <= 0.0 )
+  {
+    return trajectory;
+  }
+
+  const double   clamped_t_final = std::min( t_final, max_total_time );
+  std::size_t    max_steps       = static_cast<std::size_t>( clamped_t_final / time_step ) + 1;
+  constexpr auto hard_step_cap   = static_cast<std::size_t>( 100000 ); // safety cap
+
+  if( max_steps > hard_step_cap )
+  {
+    max_steps = hard_step_cap;
+  }
+
+  dynamics::VehicleStateDynamic current_state = start_state;
+
+  for( std::size_t step = 0; step <= max_steps; ++step )
+  {
+    double t = static_cast<double>( step ) * time_step;
+    if( t > clamped_t_final )
+    {
+      t = clamped_t_final;
+    }
+
+    current_state = initial_trajectory.get_state_at_time( t );
+    trajectory.states.push_back( current_state );
+
+    if( t >= clamped_t_final )
+    {
+      break;
+    }
   }
 
   return trajectory;
 }
+
 } // namespace planner
 } // namespace adore

@@ -26,6 +26,7 @@
 #include "dynamics/integration.hpp"
 #include "dynamics/physical_vehicle_model.hpp"
 #include "dynamics/vehicle_state.hpp"
+#include "planning/idm.hpp"
 #include <eigen3/Eigen/Dense>
 
 namespace adore
@@ -149,35 +150,13 @@ calculate_errors( const dynamics::VehicleStateDynamic& state, double target_x, d
   return { lateral_error, heading_error };
 }
 
-static double
-compute_idm_velocity( double obstacle_distance, double goal_distance, double obstacle_speed,
-                      const dynamics::VehicleStateDynamic& current_state )
-{
-  double max_speed            = 2.0;
-  double desired_acceleration = 2.0;
-  double desired_deceleration = 2.0;
-  double min_distance         = 8.0;
-  double time_headway         = 3.0;
-
-  double effective_distance = std::min( obstacle_distance, goal_distance );
-  if( goal_distance < obstacle_distance )
-    min_distance = 0.0;
-
-  double s_star = min_distance + current_state.vx * time_headway
-                + current_state.vx * ( current_state.vx - obstacle_speed )
-                    / ( 2 * std::sqrt( desired_acceleration * desired_deceleration ) );
-
-  return current_state.vx
-       + desired_acceleration * ( 1 - std::pow( current_state.vx / max_speed, 4 ) - std::pow( s_star / effective_distance, 2 ) );
-}
-
 // compute the distance to the nearest object, if within a certain radius from the center of the waypoint lane, considering obstacle fixed
 static double
 get_distance_to_nearest_obstacle( const tk::spline& waypoint_spline_x, const tk::spline& waypoint_spline_y, const double waypoints_length,
                                   const dynamics::TrafficParticipantSet& traffic_participants )
 {
-  double ds                     = 0.1; // check step size
-  int    number_of_steps        = (int) waypoints_length / ds;
+  double ds                     = 0.5; // check step size
+  int    number_of_steps        = static_cast<int>( waypoints_length / ds );
   double min_distance_to_object = std::numeric_limits<double>::max();
   double treshold_within_lane   = 1.0;
 
@@ -210,9 +189,9 @@ get_distance_to_nearest_obstacle( const tk::spline& waypoint_spline_x, const tk:
 
 template<typename Line>
 dynamics::Trajectory
-waypoints_to_trajectory( const dynamics::VehicleStateDynamic& start_state, const Line& waypoints, double dt, double target_speed,
-                         const dynamics::VehicleCommandLimits& limits, const dynamics::TrafficParticipantSet& traffic_participants,
-                         const dynamics::PhysicalVehicleModel& model, double k_speed = 0.5, double k_lateral = 1.0, double k_heading = 2.0,
+waypoints_to_trajectory( const dynamics::VehicleStateDynamic& start_state, const Line& waypoints,
+                         const dynamics::TrafficParticipantSet& traffic_participants, const dynamics::PhysicalVehicleModel& model,
+                         double target_speed = 2.0, double dt = 0.1, double k_speed = 0.5, double k_lateral = 0.5, double k_heading = 2.0,
                          double cg_ratio = 0.5 )
 {
   dynamics::Trajectory trajectory;
@@ -250,9 +229,7 @@ waypoints_to_trajectory( const dynamics::VehicleStateDynamic& start_state, const
     double closest_obstacle_distance = get_distance_to_nearest_obstacle( spline_x, spline_y, s_vec.back(), traffic_participants );
 
     // Calculate acceleration based on speed error
-    double speed_error  = target_speed - current_state.vx;
-    double acceleration = -k_speed
-                        * ( current_state.vx - compute_idm_velocity( closest_obstacle_distance, s_vec.back(), 0.0, current_state ) );
+    double acceleration = idm::calculate_idm_acc( 100, closest_obstacle_distance, target_speed, 3.0, 7.0, current_state.vx, 2.0, 0.0 );
 
     dynamics::VehicleCommand control;
     control.acceleration = acceleration;
@@ -269,8 +246,9 @@ waypoints_to_trajectory( const dynamics::VehicleStateDynamic& start_state, const
     auto [lateral_error, heading_error] = calculate_errors( current_state, target_x, target_y, target_yaw );
 
     // Set steering angle based on direction and lateral error
-    control.steering_angle = heading_error * k_heading + lateral_error * k_lateral * current_state.vx;
-    control.clamp_within_limits( limits );
+    control.steering_angle = heading_error * k_heading + lateral_error * k_lateral;
+
+    control.clamp_within_limits( model.params );
 
     // Update vehicle state using Euler integration
     current_state                = dynamics::integrate_euler( current_state, control, dt, model.motion_model );

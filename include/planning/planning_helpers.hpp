@@ -191,7 +191,7 @@ template<typename Line>
 dynamics::Trajectory
 waypoints_to_trajectory( const dynamics::VehicleStateDynamic& start_state, const Line& waypoints,
                          const dynamics::TrafficParticipantSet& traffic_participants, const dynamics::PhysicalVehicleModel& model,
-                         double target_speed = 2.0, double dt = 0.1, double k_speed = 0.5, double k_lateral = 0.5, double k_heading = 2.0,
+                         double target_speed = 2.0, double dt = 0.1, double k_speed = 0.5, double k_lateral = 0.2, double k_heading = 1.75,
                          double cg_ratio = 0.5 )
 {
   dynamics::Trajectory trajectory;
@@ -222,14 +222,19 @@ waypoints_to_trajectory( const dynamics::VehicleStateDynamic& start_state, const
 
   dynamics::VehicleStateDynamic current_state = start_state;
   double                        s             = 0.0;
+  double total_time = std::min(start_state.vx / 1.0, 1.0);
+  if( target_speed != 0.0 ) 
+    total_time = cumulative_dist / target_speed;
 
-  for( double time = 0; time <= cumulative_dist / target_speed; time += dt )
+  for( double time = 0; time <= total_time; time += dt )
   {
     // calculate the distance to closest object
     double closest_obstacle_distance = get_distance_to_nearest_obstacle( spline_x, spline_y, s_vec.back(), traffic_participants );
 
     // Calculate acceleration based on speed error
-    double acceleration = idm::calculate_idm_acc( 100, closest_obstacle_distance, target_speed, 3.0, 7.0, current_state.vx, 2.0, 0.0 );
+    double acceleration = std::max(-1.5, - std::abs( current_state.ax ) * 1.05); // constant braking to bring the vehicle to stop
+    if( target_speed != 0.0 )
+      acceleration = std::min(idm::calculate_idm_acc( 100, closest_obstacle_distance, current_state.vx, 3.0, 7.0, current_state.vx, 2.0, 0.0 ), acceleration);
 
     dynamics::VehicleCommand control;
     control.acceleration = acceleration;

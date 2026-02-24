@@ -234,7 +234,7 @@ waypoints_to_trajectory( const dynamics::VehicleStateDynamic& start_state, const
     // Calculate acceleration based on speed error
     double acceleration = std::max(-1.5, - std::abs( current_state.ax ) * 1.05); // constant braking to bring the vehicle to stop
     if( target_speed != 0.0 )
-      acceleration = std::min(idm::calculate_idm_acc( 100, closest_obstacle_distance, current_state.vx, 3.0, 7.0, current_state.vx, 2.0, 0.0 ), acceleration);
+      acceleration = idm::calculate_idm_acc( 100, closest_obstacle_distance, target_speed, 3.0, 7.0, current_state.vx, 2.0, 0.0 );
 
     dynamics::VehicleCommand control;
     control.acceleration = acceleration;

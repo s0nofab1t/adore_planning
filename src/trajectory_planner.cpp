@@ -75,11 +75,12 @@ TrajectoryPlanner::get_planning_model( const dynamics::PhysicalVehicleParameters
 {
   return [params]( const mas::State& x, const mas::Control& u ) -> mas::StateDerivative {
     mas::StateDerivative dxdt;
-    dxdt.setZero( 4 );
+    dxdt.setZero( 5 );
     dxdt( 0 ) = x( 3 ) * std::cos( x( 2 ) );                    // x
     dxdt( 1 ) = x( 3 ) * std::sin( x( 2 ) );                    // y
-    dxdt( 2 ) = x( 3 ) * std::tan( u( 0 ) ) / params.wheelbase; // yaw_angle
+    dxdt( 2 ) = x( 3 ) * std::tan( x( 4 ) ) / params.wheelbase; // yaw_angle
     dxdt( 3 ) = u( 1 );                                         // v
+    dxdt( 4 ) = u( 0 );                                         // steering angle
     return dxdt;
   };
 }
@@ -161,6 +162,13 @@ TrajectoryPlanner::optimize_trajectory( const dynamics::VehicleStateDynamic& cur
   setup_problem();
   solve_problem();
   auto out_trajectory = extract_trajectory();
+  if( problem->best_cost > 30.0 && current_state.vx > 2.0 && counter < 15 )
+  {
+    counter++;
+    return previous_trajectory;
+  }
+  counter             = 0;
+  previous_trajectory = out_trajectory;
   return out_trajectory;
 }
 
@@ -200,7 +208,7 @@ TrajectoryPlanner::extract_trajectory()
     state.yaw_angle      = math::normalize_angle( x( 2 ) );
     state.vx             = x( 3 );
     state.time           = start_state.time + i * dt;
-    state.steering_angle = math::normalize_angle( u( 0 ) );
+    state.steering_angle = math::normalize_angle( x( 4 ) );
     state.ax             = u( 1 );
 
     trajectory.states.push_back( state );
@@ -214,11 +222,11 @@ TrajectoryPlanner::setup_problem()
 {
   problem = std::make_shared<mas::OCP>();
 
-  problem->state_dim     = 4;
+  problem->state_dim     = 5;
   problem->control_dim   = 2;
   problem->horizon_steps = horizon_steps;
   problem->dt            = dt;
-  problem->initial_state = Eigen::VectorXd( 4 );
+  problem->initial_state = Eigen::VectorXd( 5 );
   problem->dynamics      = get_planning_model( vehicle_params );
 
 
@@ -227,9 +235,14 @@ TrajectoryPlanner::setup_problem()
   upper_bounds << vehicle_params.steering_angle_max, vehicle_params.acceleration_max;
   problem->input_lower_bounds = lower_bounds;
   problem->input_upper_bounds = upper_bounds;
+  // Eigen::VectorXd state_lower_bounds( problem->state_dim ), state_upper_bounds( problem->state_dim );
+  // state_lower_bounds << -100000000000, -100000000000, -1000000000, 0.0, -vehicle_params.steering_angle_max;
+  // state_upper_bounds << 100000000000, 100000000000, 100000000000, 15.0, vehicle_params.steering_angle_max;
+  // problem->state_lower_bounds = state_lower_bounds;
+  // problem->state_upper_bounds = state_upper_bounds;
   problem->stage_cost         = make_trajectory_cost( reference_trajectory );
 
-  problem->initial_state << start_state.x, start_state.y, start_state.yaw_angle, start_state.vx;
+  problem->initial_state << start_state.x, start_state.y, start_state.yaw_angle, start_state.vx, start_state.steering_angle;
 
   // initialize best guess controls from guess trajectory
   problem->initial_controls = mas::ControlTrajectory::Zero( problem->control_dim, problem->horizon_steps );
@@ -240,7 +253,7 @@ TrajectoryPlanner::setup_problem()
     double t                          = i * dt;
     auto   ref                        = guess_trajectory.get_state_at_time( t );
     problem->initial_controls( 1, i ) = ref.ax; // steering
-    problem->initial_controls( 0, i ) = ref.steering_angle;
+    problem->initial_controls( 0, i ) = 0.0;
   }
 
   problem->initialize_problem();

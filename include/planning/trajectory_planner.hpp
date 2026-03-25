@@ -53,7 +53,8 @@ public:
 
   void set_parameters( const std::map<std::string, double>& params );
   void set_vehicle_parameters( const dynamics::PhysicalVehicleParameters& params );
-  void set_comfort_settings( const std::shared_ptr<dynamics::ComfortSettings>& settings );
+  void set_comfort_settings( const dynamics::ComfortSettings& settings );
+  dynamics::PhysicalVehicleParameters get_physical_vehicle_parameters();
 
 private:
 
@@ -78,15 +79,17 @@ private:
   double dt              = 0.1;
   size_t horizon_steps   = 40;
   double ref_traj_length = 100;
+  int    counter         = 0;
 
   std::shared_ptr<mas::OCP> problem;
   dynamics::Trajectory      reference_trajectory; // Reference trajectory for the planner
   dynamics::Trajectory      guess_trajectory;     // Reference trajectory for the planner
+  dynamics::Trajectory      previous_trajectory;  // Previously planned trajectory
 
   dynamics::VehicleStateDynamic start_state; // Current state of the vehicle
 
   dynamics::PhysicalVehicleParameters        vehicle_params;
-  std::shared_ptr<dynamics::ComfortSettings> comfort_settings;
+  dynamics::ComfortSettings comfort_settings;
 
 
   void                   setup_problem();
